@@ -46,7 +46,7 @@ The workflow retains a route into a native FreeCAD document. Open [FreeCAD_Simul
 
 This handoff is more precise than treating the standalone viewer as a general CAD exporter. The current application does not provide a universal working-file import/export pipeline. If dimensions were loaded from another file in the viewer, transfer those accepted values into the bundled source before generating the FreeCAD document. Verify that both environments show the same arrangement.
 
-Once inside FreeCAD, add static items such as the supporting frame, bearing mounts, brackets, guards, or mounting plates. Use the mechanism’s shaft positions and movement envelope to guide their placement. Keep these additions organised separately and save a separate working document before rerunning generation code, which creates a fresh mechanism document. Generated solids do not automatically provide a complete sketch-based feature history.
+Once inside FreeCAD, static items can be added such as the supporting frame, bearing mounts, brackets, guards, or mounting plates. Use the mechanism’s shaft positions and movement envelope to guide their placement. Keep these additions organised separately and save a separate working document before rerunning generation code, which creates a fresh mechanism document. Generated solids do not automatically provide a complete sketch-based feature history.
 
 ## A practical development cycle
 
