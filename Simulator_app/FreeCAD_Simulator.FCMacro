@@ -1,0 +1,205 @@
+"""Open this macro in FreeCAD, then press Execute. Keep sibling files together."""
+import os
+import time
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+from pivy import coin
+try:
+    from PySide import QtCore, QtGui
+    try:
+        from PySide import QtWidgets
+    except ImportError:
+        QtWidgets = QtGui
+except ImportError:
+    from PySide6 import QtCore, QtWidgets
+
+# FreeCAD sets __file__ when executing a saved macro.
+folder = os.path.dirname(os.path.abspath(__file__))
+for name in ('sim_timer', 'lugged_wheel_chain_timer'):
+    previous = getattr(App, name, None)
+    if previous is not None:
+        previous.stop()
+old_panel = getattr(App, 'wheel_simulator_panel', None)
+if old_panel is not None:
+    old_panel.close()
+    old_panel.deleteLater()
+
+# This is the bundled, trusted CAD macro; executing it constructs the actual solids.
+source = os.path.join(folder, 'source_model.py')
+namespace = {'__name__': '__wheel_model__', '__file__': source}
+with open(source, encoding='utf-8') as stream:
+    exec(compile(stream.read(), source, 'exec'), namespace)
+App.sim_timer.stop()
+App.sim_timer.timeout.disconnect()
+namespace['sprockets'][0].Label = 'Sprocket {}T'.format(namespace['T1'])
+namespace['ground_drive_wheel'].Label = '{}-Lug Ground-Drive Wheel — {}T shaft'.format(namespace['LUG_COUNT'], namespace['T1'])
+
+# Snapshot the source macro's fitted axonometric camera before adding controls.
+assembly_view = Gui.getDocument(namespace['doc'].Name).activeView()
+startup_camera = assembly_view.getCamera()
+
+
+def camera_action(action):
+    if namespace['doc'].Name in App.listDocuments():
+        action()
+
+
+def orbit_camera(axis, degrees):
+    camera = assembly_view.getCameraNode()
+    q = camera.orientation.getValue().getValue()
+    rotation = App.Rotation(*q)
+    position = App.Vector(*camera.position.getValue().getValue())
+    distance = camera.focalDistance.getValue()
+    # Keep the point under the camera's centre fixed while orbiting around it.
+    forward = rotation.multVec(App.Vector(0, 0, -1))
+    target = position + forward * distance
+    updated = rotation.multiply(App.Rotation(App.Vector(*axis), degrees))
+    new_position = target - updated.multVec(App.Vector(0, 0, -1)) * distance
+    camera.orientation.setValue(coin.SbRotation(*updated.Q))
+    camera.position.setValue(new_position.x, new_position.y, new_position.z)
+
+
+def pan_camera(horizontal, vertical):
+    camera = assembly_view.getCameraNode()
+    rotation = App.Rotation(*camera.orientation.getValue().getValue())
+    position = App.Vector(*camera.position.getValue().getValue())
+    if hasattr(camera, 'height'):
+        span = camera.height.getValue()
+    else:
+        import math
+        span = 2 * camera.focalDistance.getValue() * math.tan(camera.heightAngle.getValue()/2)
+    shifted = position + rotation.multVec(App.Vector(horizontal*span, vertical*span, 0))
+    camera.position.setValue(shifted.x, shifted.y, shifted.z)
+
+
+def zoom_camera(factor):
+    camera = assembly_view.getCameraNode()
+    if hasattr(camera, 'height'):
+        camera.height.setValue(max(0.01, min(1e7, camera.height.getValue()*factor)))
+    else:
+        rotation = App.Rotation(*camera.orientation.getValue().getValue())
+        position = App.Vector(*camera.position.getValue().getValue())
+        old_distance = camera.focalDistance.getValue()
+        distance = max(0.01, min(1e7, old_distance*factor))
+        forward = rotation.multVec(App.Vector(0, 0, -1))
+        shifted = position + forward*(old_distance-distance)
+        camera.position.setValue(shifted.x, shifted.y, shifted.z)
+        camera.focalDistance.setValue(distance)
+
+
+panel = QtWidgets.QDockWidget('Wheel & chain simulator', Gui.getMainWindow())
+body = QtWidgets.QWidget()
+layout = QtWidgets.QVBoxLayout(body)
+layout.addWidget(QtWidgets.QLabel('{}T / {}T / {}T · {} links · {:.3f} mm pitch'.format(namespace['T1'], namespace['T2'], namespace['T3'], namespace['NUM_LINKS'], namespace['PITCH'])))
+layout.addWidget(QtWidgets.QLabel('Wheel locked 1:1 to first sprocket; Z = −50 mm'))
+speed = QtWidgets.QDoubleSpinBox()
+speed.setRange(-1000, 1000)
+speed.setValue(100)
+speed.setSuffix(' mm/s')
+layout.addWidget(speed)
+play = QtWidgets.QPushButton('Play')
+step = QtWidgets.QPushButton('Step one pitch')
+reset = QtWidgets.QPushButton('Reset')
+fit = QtWidgets.QPushButton('Fit assembly')
+for button in (play, step, reset, fit):
+    layout.addWidget(button)
+status = QtWidgets.QLabel()
+layout.addWidget(status)
+camera_group = QtWidgets.QGroupBox('3D camera')
+camera_layout = QtWidgets.QVBoxLayout(camera_group)
+camera_layout.addWidget(QtWidgets.QLabel('Starts in the original axonometric view.'))
+
+
+def camera_row(actions):
+    row = QtWidgets.QHBoxLayout()
+    for title, action in actions:
+        button = QtWidgets.QPushButton(title)
+        button.clicked.connect(lambda checked=False, action=action: camera_action(action))
+        row.addWidget(button)
+    camera_layout.addLayout(row)
+
+
+camera_row([
+    ('Front', assembly_view.viewFront),
+    ('Top', assembly_view.viewTop),
+    ('Right', assembly_view.viewRight),
+    ('Isometric', assembly_view.viewAxonometric),
+])
+angle_step = QtWidgets.QDoubleSpinBox()
+angle_step.setRange(1, 90)
+angle_step.setValue(10)
+angle_step.setSuffix('° orbit step')
+camera_layout.addWidget(angle_step)
+camera_row([
+    ('Orbit left', lambda: orbit_camera((0, 1, 0), -angle_step.value())),
+    ('Orbit right', lambda: orbit_camera((0, 1, 0), angle_step.value())),
+])
+camera_row([
+    ('Orbit up', lambda: orbit_camera((1, 0, 0), -angle_step.value())),
+    ('Orbit down', lambda: orbit_camera((1, 0, 0), angle_step.value())),
+])
+camera_row([
+    ('Roll left', lambda: orbit_camera((0, 0, 1), -angle_step.value())),
+    ('Roll right', lambda: orbit_camera((0, 0, 1), angle_step.value())),
+])
+camera_row([
+    ('Pan left', lambda: pan_camera(-0.08, 0)),
+    ('Pan right', lambda: pan_camera(0.08, 0)),
+    ('Pan up', lambda: pan_camera(0, 0.08)),
+    ('Pan down', lambda: pan_camera(0, -0.08)),
+])
+camera_row([
+    ('Zoom in', lambda: zoom_camera(0.8)),
+    ('Zoom out', lambda: zoom_camera(1.25)),
+])
+camera_row([('Restore startup view', lambda: assembly_view.setCamera(startup_camera))])
+layout.addWidget(camera_group)
+layout.addWidget(QtWidgets.QLabel('Continuous pitch-circle motion.\nNo force, slip or collision simulation.'))
+layout.addStretch()
+panel.setWidget(body)
+try:
+    area = QtCore.Qt.RightDockWidgetArea
+except AttributeError:
+    area = QtCore.Qt.DockWidgetArea.RightDockWidgetArea
+Gui.getMainWindow().addDockWidget(area, panel)
+App.wheel_simulator_panel = panel
+state = {'last': time.perf_counter()}
+
+def apply():
+    if namespace['doc'].Name not in App.listDocuments():
+        App.sim_timer.stop()
+        play.setText('Document closed')
+        return
+    namespace['apply_simulation_state']()
+    status.setText('Chain travel: {:.1f} mm'.format(namespace['animation_offset']))
+
+def tick():
+    now = time.perf_counter()
+    namespace['animation_offset'] += speed.value() * min(now-state['last'], 0.15)
+    state['last'] = now
+    apply()
+
+def toggle():
+    if App.sim_timer.isActive():
+        App.sim_timer.stop()
+        play.setText('Play')
+    else:
+        state['last'] = time.perf_counter()
+        App.sim_timer.start(30)
+        play.setText('Pause')
+
+def move(reset_position=False):
+    App.sim_timer.stop()
+    play.setText('Play')
+    namespace['animation_offset'] = 0 if reset_position else namespace['animation_offset']+namespace['PITCH']
+    apply()
+
+App.sim_timer.timeout.connect(tick)
+play.clicked.connect(toggle)
+step.clicked.connect(lambda: move())
+reset.clicked.connect(lambda: move(True))
+fit.clicked.connect(lambda: camera_action(assembly_view.fitAll))
+panel.visibilityChanged.connect(lambda visible: None if visible else App.sim_timer.stop())
+apply()
+panel.show()
