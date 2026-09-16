@@ -5,6 +5,11 @@ PLANTINATOR 2026 explores a practical way to develop machinery with complex movi
 The real world objective is to build a transplanting machine simplified as below:
 ![Simplified duckbill assembly](https://raw.githubusercontent.com/paddygoat/PLANTINATOR_2026/main/Images/simplified_duckbill_assembly_01.jpeg)
 
+Progress so far:
+[![Watch the PLANTINATOR video on YouTube](https://img.youtube.com/vi/es3N6XBZsP0/hqdefault.jpg)](https://youtu.be/es3N6XBZsP0)
+
+[Watch the video on YouTube](https://youtu.be/es3N6XBZsP0).
+
 The repository contains a lugged wheel and chain mechanism, including paired wheels, a shared shaft, sprockets, and individual chain components. Its dimensions and motion relationships are expressed in code, making the assembly suitable for systematic changes rather than repeated manual reconstruction.
 
 ## Why describe moving geometry in Python?
