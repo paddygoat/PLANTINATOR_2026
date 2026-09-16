@@ -2,6 +2,9 @@
 
 PLANTINATOR 2026 explores a practical way to develop machinery with complex moving geometry: describe the mechanism in Python, refine it with an LLM such as GPT Astra, and inspect its movement in a dedicated Qt5 simulation application. When the mechanism is ready for further engineering, construct the corresponding model in FreeCAD and add the surrounding structure. This combines repeatable geometry generation, rapid visual feedback, and conventional CAD detailing in one development workflow.
 
+The real world objective is to build a transplanting machine simplified as below:
+![Simplified duckbill assembly](https://raw.githubusercontent.com/paddygoat/PLANTINATOR_2026/main/Images/simplified_duckbill_assembly_01.jpeg)
+
 The repository contains a lugged wheel and chain mechanism, including paired wheels, a shared shaft, sprockets, and individual chain components. Its dimensions and motion relationships are expressed in code, making the assembly suitable for systematic changes rather than repeated manual reconstruction.
 
 ## Why describe moving geometry in Python?
