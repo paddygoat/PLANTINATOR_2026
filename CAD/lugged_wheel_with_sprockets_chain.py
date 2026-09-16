@@ -304,10 +304,12 @@ def create_ground_drive_wheel(doc):
     # origin needs the centre spacing PLUS one complete envelope depth.
     second_z = -WHEEL_CENTRE_SPACING - RIM_WIDTH - REAR_DISC_THK
     # Snapshot before cloning; FreeCAD and the headless viewer expose these
-    # collections under different names. Exclude the single shared shaft.
+    # collections under different names. Copy only Part::Feature solids:
+    # groups can expose an aggregate Shape but have no ShapeColor.
     originals = list(doc.Objects if hasattr(doc, "Objects") else doc.objects)
     for original in originals:
-        if (not original.Name.startswith("Wheel") or
+        if (original.TypeId != "Part::Feature" or
+                not original.Name.startswith("Wheel") or
                 original.Name == "WheelShaft" or not hasattr(original, "Shape")):
             continue
         copied_shape = original.Shape.copy()
