@@ -1,0 +1,351 @@
+# FreeCAD macro: four-panel demi-cone; dimensions in mm.
+# Standalone: uses only built-in FreeCAD/Part and Python modules.
+# Dimensions refer to the theoretical sheet mid-surface.
+import math
+import os
+import FreeCAD as App
+import Part
+
+SLANT_LENGTH = 180.0
+RIM_CHORD = 50.0                 # straight chord, NOT circular arc length
+THICKNESS = 2.0
+SLOT_WIDTH = 0.3                 # nominal material removed before bending
+TIP_KEEP = 30.0
+RIM_KEEP = 20.0                 # measured along each bend from its rim corner
+SLOTS_PER_BEND = 3
+PANELS = 4
+FLANGE_WIDTH = 25.0             # horizontal distance normal to each straight rim edge
+FLANGE_THICKNESS = 2.0
+BRACKET_WIDTH = 20.0
+BRACKET_LENGTH = 50.0
+BRACKET_THICKNESS = 3.0
+BRACKET_TOP_RADIUS = 5.0
+BRACKET_HOLE_DIAMETER = 6.0
+BRACKET_HOLE_FROM_TOP = 10.0
+BRACKET_BELOW_FLANGE = 3.0
+MOUNT_SLOT_LENGTH = 20.2        # along Y, perpendicular to open-back line
+MOUNT_SLOT_WIDTH = 3.2          # along X
+MOUNT_SLOT_X = 63.5             # mirrored centres at +/- X
+MOUNT_SLOT_Y = 45.0             # from open-back line Y=0; estimated from screenshot
+# Blank means save beside this macro (fallback: FreeCAD macro directory).
+OUTPUT_DIR = ""
+
+L = SLANT_LENGTH
+C = RIM_CHORD
+if PANELS != 4 or SLOTS_PER_BEND < 1:
+    raise ValueError("This macro requires four panels and at least one slot.")
+if not (0 < C < 2*L and 0 < TIP_KEEP < L and 0 < RIM_KEEP < L-TIP_KEEP and THICKNESS > 0 and SLOT_WIDTH > 0):
+    raise ValueError("Invalid dimensions.")
+alpha = 2 * math.asin(C / (2*L))
+radius = C / (2*math.sin(math.pi/(2*PANELS)))
+if radius >= L:
+    raise ValueError("Rim too large for the sloping length.")
+height = math.sqrt(L*L - radius*radius)
+# Equal slot lengths and equal internal bridges; both end margins stay intact.
+pitch_piece = (L - TIP_KEEP - RIM_KEEP) / (2*SLOTS_PER_BEND - 1)
+intervals = [(TIP_KEEP + 2*i*pitch_piece,
+              TIP_KEEP + (2*i+1)*pitch_piece) for i in range(SLOTS_PER_BEND)]
+angles = [math.pi/2 + (i-PANELS/2)*alpha for i in range(PANELS+1)]
+V = App.Vector
+origin = V(0,0,0)
+rim = [V(L*math.cos(a), L*math.sin(a), 0) for a in angles]
+
+def face(points):
+    return Part.Face(Part.makePolygon(points + [points[0]]))
+
+uncut = face([origin] + rim)
+cutters = []
+for a in angles[1:-1]:
+    u, v = V(math.cos(a),math.sin(a),0), V(-math.sin(a),math.cos(a),0)
+    for start, end in intervals:
+        # All slots are enclosed; preserve the solid rim margin.
+        end_tool = end
+        cutters.append(face([u*start-v*(SLOT_WIDTH/2),
+                             u*end_tool-v*(SLOT_WIDTH/2),
+                             u*end_tool+v*(SLOT_WIDTH/2),
+                             u*start+v*(SLOT_WIDTH/2)]))
+
+def perforate(shape):
+    for cutter in cutters:
+        shape = shape.cut(cutter)
+    return shape.removeSplitter()
+
+flat = perforate(uncut)
+if not flat.isValid() or len(flat.Faces) != 1:
+    raise RuntimeError("Flat pattern is not a valid connected face.")
+
+def feature(doc, name, label, shape):
+    obj = doc.addObject("Part::Feature", name)
+    obj.Label = label
+    obj.Shape = shape
+    return obj
+
+def parameters(obj):
+    for name, val in [("SlantLength",L), ("RimChord",C),
+                      ("SheetThickness",THICKNESS), ("SlotWidth",SLOT_WIDTH),
+                      ("TipKeep",TIP_KEEP), ("RimKeep",RIM_KEEP),
+                      ("SlotAndBridgeLength",pitch_piece),
+                      ("RimRadius",radius), ("AxialHeight",height)]:
+        obj.addProperty("App::PropertyLength",name,"Design reference")
+        setattr(obj,name,val)
+        obj.setEditorMode(name,1)
+    obj.addProperty("App::PropertyString","ModelNotes","Design reference")
+    obj.ModelNotes = "Edit constants in macro and rerun; dimensions on mid-surface; ideal sharp bends, no bend allowance."
+
+try:
+    macro_dir = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    macro_dir = App.getUserMacroDir(True)
+save_dir = os.path.abspath(os.path.expanduser(OUTPUT_DIR or macro_dir))
+os.makedirs(save_dir, exist_ok=True)
+
+def save_doc(doc, stem):
+    # Avoid overwriting previous user models when rerunning.
+    base = os.path.join(save_dir,stem)
+    index = 1
+    while any(os.path.exists(base+ext) for ext in (".FCStd",".step",".dxf")):
+        base = os.path.join(save_dir,stem+"_"+str(index))
+        index += 1
+    doc.recompute()
+    doc.saveAs(base+".FCStd")
+    return base
+
+def dxf_write(path, polylines):
+    # Minimal ASCII DXF, millimetres. No Draft workbench dependency.
+    data = ["0","SECTION","2","HEADER","9","$ACADVER","1","AC1015",
+            "9","$INSUNITS","70","4","9","$MEASUREMENT","70","1",
+            "0","ENDSEC","0","SECTION","2","ENTITIES"]
+    for layer, points, closed in polylines:
+        data += ["0","LWPOLYLINE","100","AcDbEntity","8",layer,
+                 "100","AcDbPolyline","90",str(len(points)),"70",str(int(closed))]
+        for p in points:
+            data += ["10",format(p.x,".12g"),"20",format(p.y,".12g")]
+    data += ["0","ENDSEC","0","EOF"]
+    with open(path,"w",encoding="ascii") as stream:
+        stream.write("\n".join(data)+"\n")
+
+def view(doc, obj, top=False):
+    if App.GuiUp:
+        import FreeCADGui as Gui
+        obj.ViewObject.ShapeColor = (0.78,0.80,0.83)
+        obj.ViewObject.LineColor = (0.12,0.12,0.15)
+        if top:
+            Gui.activeDocument().activeView().viewTop()
+        else:
+            Gui.activeDocument().activeView().viewAxonometric()
+        Gui.activeDocument().activeView().fitAll()
+    doc.recompute()
+
+# Exact isometric mapping of the four perforated triangular mid-surfaces.
+fold_rim = [V(radius*math.cos(i*math.pi/PANELS),
+              radius*math.sin(i*math.pi/PANELS),height) for i in range(PANELS+1)]
+panels = []
+mid_faces = []
+normals = []
+for i in range(PANELS):
+    triangle = perforate(face([origin,rim[i],rim[i+1]]))
+    a = angles[i]
+    # Local 2D basis: radial u and in-plane perpendicular v.
+    U = fold_rim[i]*(1/L)
+    W = fold_rim[i+1]*(1/L)
+    T = (W-U*math.cos(alpha))*(1/math.sin(alpha))
+    N = U.cross(T)
+    N.normalize()
+    normals.append(N)
+    ex = U*math.cos(a)-T*math.sin(a)
+    ey = U*math.sin(a)+T*math.cos(a)
+    matrix = App.Matrix()
+    matrix.A11,matrix.A21,matrix.A31 = ex.x,ex.y,ex.z
+    matrix.A12,matrix.A22,matrix.A32 = ey.x,ey.y,ey.z
+    matrix.A13,matrix.A23,matrix.A33 = N.x,N.y,N.z
+    triangle.transformShape(matrix,True)
+    mid_faces.append(triangle.copy())
+    # Add thickness NORMAL to the panel. This gives a square-cut 2 mm
+    # rim instead of the former ~5.91 mm vertically extruded rim wall.
+    # Start with an oversized planar patch; trim its sides in the shared
+    # radial miter planes so adjacent panels meet without gaps/overlaps.
+    margin = 10*THICKNESS
+    m = (rim[i]+rim[i+1])*0.5
+    along = m*(1/m.Length)
+    across = rim[i+1]-rim[i]
+    across.normalize()
+    half_width = C/2 + margin
+    patch = face([m-across*half_width, m+across*half_width,
+                  -along*margin+across*half_width,
+                  -along*margin-across*half_width])
+    patch.transformShape(matrix,True)
+    patch.translate(N*(-THICKNESS/2))
+    solid = patch.extrude(N*THICKNESS)
+    reach = 4*L
+    lo, hi = i*math.pi/PANELS, (i+1)*math.pi/PANELS
+    wedge = face([V(0,0,-reach),
+                  V(reach*math.cos(lo),reach*math.sin(lo),-reach),
+                  V(reach*math.cos(hi),reach*math.sin(hi),-reach)])
+    solid = solid.common(wedge.extrude(V(0,0,2*reach)))
+    # Keep the existing developed slot geometry across the miter planes.
+    # Axial tool sweeps make adjoining half-slots meet.
+    # All slots stop before the rim, leaving the specified solid margin.
+    for slot_angle in angles[1:-1]:
+        u = V(math.cos(slot_angle),math.sin(slot_angle),0)
+        v = V(-math.sin(slot_angle),math.cos(slot_angle),0)
+        for start,end in intervals:
+            end_tool = end
+            tool = face([u*start-v*(SLOT_WIDTH/2),
+                         u*end_tool-v*(SLOT_WIDTH/2),
+                         u*end_tool+v*(SLOT_WIDTH/2),
+                         u*start+v*(SLOT_WIDTH/2)])
+            tool.transformShape(matrix,True)
+            depth = 4*THICKNESS/abs(N.z)
+            tool.translate(V(0,0,-depth/2))
+            solid = solid.cut(tool.extrude(V(0,0,depth)))
+    panels.append(solid.removeSplitter())
+
+folded = panels[0]
+for p in panels[1:]:
+    folded = folded.fuse(p)
+folded = folded.removeSplitter()
+if not folded.isValid() or len(folded.Solids) != 1:
+    raise RuntimeError("Folded model must be one valid connected solid.")
+# One continuous horizontal polygonal half-ring fitted to the OUTSIDE of the
+# actual square-cut cone rim, rather than to its theoretical mid-surface.
+# Nominal edge-to-edge contact for welding; no joint clearance/weld bead.
+if FLANGE_WIDTH <= 0 or FLANGE_THICKNESS <= 0:
+    raise ValueError("Flange dimensions must be positive.")
+half_step = math.pi/(2*PANELS)
+apothem = radius*math.cos(half_step)
+normal_z = abs(normals[0].z)
+normal_horizontal = math.sqrt(1-normal_z*normal_z)
+inner_apothem = apothem + THICKNESS*normal_horizontal/2
+outer_apothem = inner_apothem + FLANGE_WIDTH
+inner_radius = inner_apothem/math.cos(half_step)
+outer_radius = outer_apothem/math.cos(half_step)
+flange_bottom_z = height - THICKNESS*normal_z/2
+inner_chord = 2*inner_apothem*math.tan(half_step)
+outer_chord = 2*outer_apothem*math.tan(half_step)
+
+# A single closed ten-vertex contour: outer chain then reversed inner
+# chain. The open back remains open; there are NO internal miter cuts.
+outer_points = [V(outer_radius*math.cos(i*math.pi/PANELS),
+                  outer_radius*math.sin(i*math.pi/PANELS),0)
+                for i in range(PANELS+1)]
+inner_points = [V(inner_radius*math.cos(i*math.pi/PANELS),
+                  inner_radius*math.sin(i*math.pi/PANELS),0)
+                for i in range(PANELS+1)]
+cut_points = outer_points + list(reversed(inner_points))
+flange_uncut = face(cut_points)
+flange_flat = flange_uncut.copy()
+mount_slot_polygons = []
+for slot_x in (-MOUNT_SLOT_X,MOUNT_SLOT_X):
+    hx,hy = MOUNT_SLOT_WIDTH/2,MOUNT_SLOT_LENGTH/2
+    if min(hx,hy) <= 0:
+        raise ValueError("Mounting slot dimensions must be positive.")
+    points = [V(slot_x-hx,MOUNT_SLOT_Y-hy,0),V(slot_x+hx,MOUNT_SLOT_Y-hy,0),
+              V(slot_x+hx,MOUNT_SLOT_Y+hy,0),V(slot_x-hx,MOUNT_SLOT_Y+hy,0)]
+    cutter = face(points)
+    if abs(cutter.common(flange_uncut).Area-cutter.Area)>1e-7:
+        raise ValueError("Mounting slot is not fully inside the flange.")
+    mount_slot_polygons.append(points)
+    flange_flat = flange_flat.cut(cutter)
+flange_flat = flange_flat.removeSplitter()
+if not flange_flat.isValid() or len(flange_flat.Faces)!=1 or len(flange_flat.Wires)!=3:
+    raise RuntimeError("Expected one connected flange face with two enclosed slots.")
+flange_solid = flange_flat.extrude(V(0,0,FLANGE_THICKNESS))
+flange_solid.translate(V(0,0,flange_bottom_z))
+if not flange_solid.isValid() or len(flange_solid.Solids) != 1:
+    raise RuntimeError("Continuous flange must be one valid solid.")
+
+doc = App.newDocument("DemiConeWithBrackets")
+cone_obj = feature(doc,"FoldedSheet","Demi-cone - 2 mm steel, enclosed slots",folded)
+parameters(cone_obj)
+flange_obj = feature(doc,"ContinuousFlange","One-piece flange - two 20.2 x 3.2 mm mounting slots",flange_solid)
+for name,value in [("Width",FLANGE_WIDTH),("Thickness",FLANGE_THICKNESS),
+                   ("MountSlotLength",MOUNT_SLOT_LENGTH),("MountSlotWidth",MOUNT_SLOT_WIDTH),
+                   ("MountSlotCentreX",MOUNT_SLOT_X),("MountSlotCentreY",MOUNT_SLOT_Y),
+                   ("InnerFacetLength",inner_chord),("OuterFacetLength",outer_chord)]:
+    flange_obj.addProperty("App::PropertyLength",name,"Flange dimensions")
+    setattr(flange_obj,name,value)
+    flange_obj.setEditorMode(name,1)
+cut_obj = feature(doc,"FlangeCutLayout","Flange cutting outline with two enclosed mounting slots",flange_flat)
+cut_obj.Visibility = False
+# Bracket flat profile: X = width, Y = length, Z = thickness.
+# The two rounded corners are at the hole/top end only.
+w,h,t,r = BRACKET_WIDTH,BRACKET_LENGTH,BRACKET_THICKNESS,BRACKET_TOP_RADIUS
+if not (0 < 2*r <= w and r < h and 0 < t < MOUNT_SLOT_WIDTH and w < MOUNT_SLOT_LENGTH):
+    raise ValueError("Invalid bracket dimensions or bracket does not fit mounting slots.")
+hole_y = h-BRACKET_HOLE_FROM_TOP
+hole_r = BRACKET_HOLE_DIAMETER/2
+if min(hole_y,h-hole_y,w/2) <= hole_r:
+    raise ValueError("Bracket hole must be enclosed inside the profile.")
+a,b,c,d,e,f = V(0,0,0),V(w,0,0),V(w,h-r,0),V(w-r,h,0),V(r,h,0),V(0,h-r,0)
+q = r/math.sqrt(2)
+outline = Part.Wire([Part.makeLine(a,b),Part.makeLine(b,c),
+                    Part.Arc(c,V(w-r+q,h-r+q,0),d).toShape(),
+                    Part.makeLine(d,e),
+                    Part.Arc(e,V(r-q,h-r+q,0),f).toShape(),
+                    Part.makeLine(f,a)])
+bracket_outline_face = Part.Face(outline)
+hole_face = Part.Face(Part.Wire([Part.makeCircle(hole_r,V(w/2,hole_y,0))]))
+bracket_flat = bracket_outline_face.cut(hole_face)
+if not bracket_flat.isValid() or len(bracket_flat.Wires)!=2:
+    raise RuntimeError("Bracket profile or hole is invalid.")
+bracket_blank = bracket_flat.extrude(V(0,0,t))
+bracket_objects = []
+bracket_solids = []
+for i,slot_x in enumerate((-MOUNT_SLOT_X,MOUNT_SLOT_X),1):
+    # local X -> world Y, local Y -> world Z, local Z -> world X.
+    matrix = App.Matrix()
+    matrix.A11,matrix.A21,matrix.A31 = 0,1,0
+    matrix.A12,matrix.A22,matrix.A32 = 0,0,1
+    matrix.A13,matrix.A23,matrix.A33 = 1,0,0
+    matrix.A14 = slot_x-t/2
+    matrix.A24 = MOUNT_SLOT_Y-w/2
+    matrix.A34 = flange_bottom_z-BRACKET_BELOW_FLANGE
+    solid = bracket_blank.copy()
+    solid.transformShape(matrix,True)
+    if not solid.isValid() or len(solid.Solids)!=1:
+        raise RuntimeError("Invalid installed bracket.")
+    bracket = feature(doc,"Bracket%d"%i,"Upright bracket %d - 20 x 50 x 3 mm"%i,solid)
+    for name,value in [("Width",w),("Length",h),("Thickness",t),("TopRadius",r),
+                       ("HoleDiameter",BRACKET_HOLE_DIAMETER),
+                       ("HoleFromTop",BRACKET_HOLE_FROM_TOP),
+                       ("BelowFlange",BRACKET_BELOW_FLANGE)]:
+        bracket.addProperty("App::PropertyLength",name,"Bracket dimensions")
+        setattr(bracket,name,value)
+        bracket.setEditorMode(name,1)
+    bracket_objects.append(bracket)
+    bracket_solids.append(solid)
+view(doc,cone_obj)
+if App.GuiUp:
+    flange_obj.ViewObject.ShapeColor = (0.76,0.82,0.88)
+    for bracket in bracket_objects:
+        bracket.ViewObject.ShapeColor = (0.80,0.73,0.55)
+    import FreeCADGui as Gui
+    Gui.activeDocument().activeView().fitAll()
+base = save_doc(doc,"DemiCone_WithBrackets")
+Part.export([cone_obj,flange_obj]+bracket_objects,base+".step")
+dxf_write(base+"_Flange_Flat.dxf",[("CUT",cut_points,True)]+
+          [("CUT",points,True) for points in mount_slot_polygons])
+
+# True circular arcs, not faceted polylines: bulge=tan(included_angle/4).
+# One bracket per DXF; order quantity TWO in 3 mm sheet.
+bulge = math.tan(math.pi/8)
+vertices = [(0,0,0),(w,0,0),(w,h-r,bulge),(w-r,h,0),(r,h,bulge),(0,h-r,0)]
+data = ["0","SECTION","2","HEADER","9","$ACADVER","1","AC1015",
+        "9","$INSUNITS","70","4","9","$MEASUREMENT","70","1",
+        "0","ENDSEC","0","SECTION","2","ENTITIES",
+        "0","LWPOLYLINE","100","AcDbEntity","8","CUT",
+        "100","AcDbPolyline","90","6","70","1"]
+for x,y,bul in vertices:
+    data += ["10",format(x,".12g"),"20",format(y,".12g"),"42",format(bul,".12g")]
+data += ["0","CIRCLE","100","AcDbEntity","8","CUT","100","AcDbCircle",
+         "10",format(w/2,".12g"),"20",format(hole_y,".12g"),"30","0",
+         "40",format(hole_r,".12g"),"0","ENDSEC","0","EOF"]
+with open(base+"_Bracket_1pc.dxf","w",encoding="ascii") as stream:
+    stream.write("\n".join(data)+"\n")
+flat_doc = App.newDocument("BracketFlatDrawing")
+flat_obj = feature(flat_doc,"BracketFlat","Bracket 20 x 50 - R5 top - hole diameter 6",bracket_flat)
+view(flat_doc,flat_obj,True)
+flat_doc.saveAs(base+"_BracketFlat.FCStd")
+App.setActiveDocument(doc.Name)
+App.Console.PrintMessage("Saved assembly, bracket flat model and DXF: "+base+"\n")
+App.Console.PrintMessage("Cut TWO brackets in 3 mm sheet. Hole centre: 10 mm from either side and 10 mm below top.\n")
