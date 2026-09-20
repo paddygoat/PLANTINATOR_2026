@@ -1,0 +1,812 @@
+# Standalone comparison: complete closed and 20-degree mechanism in side view.
+# Both poses share identical fixed pivot locations. All dimensions in mm.
+import FreeCAD as App
+import os
+
+# Root profile trimmed for at least 1 mm band clearance through 25 degrees.
+# 0 = outer hole; 1, 2, 3 move inward in 15 mm steps.
+# Selecting another hole also relocates the rear mount to retain a vertical start.
+CLEVIS_HOLE_INDEX = 0
+
+def build_pose(requested_angle):
+    # FreeCAD macro: four-panel demi-cone; dimensions in mm.
+    # Standalone: uses only built-in FreeCAD/Part and Python modules.
+    # Dimensions refer to the theoretical sheet mid-surface.
+    import math
+    import os
+    import FreeCAD as App
+    import Part
+    
+    SLANT_LENGTH = 180.0
+    RIM_CHORD = 50.0                 # straight chord, NOT circular arc length
+    THICKNESS = 2.0
+    SLOT_WIDTH = 0.3                 # nominal material removed before bending
+    TIP_KEEP = 30.0
+    RIM_KEEP = 20.0                 # measured along each bend from its rim corner
+    SLOTS_PER_BEND = 3
+    PANELS = 4
+    FLANGE_WIDTH = 25.0             # horizontal distance normal to each straight rim edge
+    FLANGE_THICKNESS = 2.0
+    BRACKET_WIDTH = 20.0
+    BRACKET_LENGTH = 60.0          # extended 10 mm below the lowest hole
+    BRACKET_THICKNESS = 3.0
+    BRACKET_TOP_RADIUS = 5.0
+    BRACKET_HOLE_DIAMETER = 6.0
+    BRACKET_HOLE_FROM_TOP = 10.0
+    BRACKET_HOLE_SPACING = 15.0     # centre-to-centre downwards
+    BRACKET_HOLE_COUNT = 3
+    BRACKET_BELOW_FLANGE = 3.0
+    MOUNT_SLOT_LENGTH = 20.2        # along Y, perpendicular to open-back line
+    MOUNT_SLOT_WIDTH = 3.2          # along X
+    MOUNT_SLOT_X = 63.5             # mirrored centres at +/- X
+    MOUNT_SLOT_Y = 45.0             # from open-back line Y=0; estimated from screenshot
+    # Blank means save beside this macro (fallback: FreeCAD macro directory).
+    OUTPUT_DIR = ""
+    # Illustrative female rod ends, not a manufacturer's dimensioned part.
+    ROD_END_EYE_OD = 16.0
+    ROD_END_HOUSING_WIDTH = 6.0
+    ROD_END_BALL_WIDTH = 8.0
+    ROD_END_BALL_RADIUS = 5.0
+    ROD_END_EYE_TO_MOUTH = 25.0
+    ROD_END_SHANK_OD = 9.0
+    ROD_THREAD_DIAMETER = 6.0
+    ROD_THREAD_ENGAGEMENT = 10.0
+    ROD_END_SPACER = 1.0
+    PIVOT_OFFSET = 20.0         # each half outward: 40 mm additional separation
+    PIVOT_BOSS_RADIUS = 12.0    # 9 mm material beyond the 6 mm hole
+    PLAIN_BAR_LENGTH = 150.0
+    PLAIN_BAR_DIAMETER = 6.0
+    CYL_BASE_Y=-201.0  # corrected cylinder: retain 7 mm initial extension
+    CYL_BASE_X=63.5
+    CYL_BASE_HEIGHT_OFFSET=0.0   # rear pin level with clevis pin at zero degrees
+    CYL_STROKE=25.0              # retained operating envelope from previous model
+    CYL_REAR_PIN_DIAMETER=10.0   # catalogue rear bore is 10; clevis pin stays 6
+    RIGHT_TIE_SPACER=1.0         # standard tie-rod mounting restored; clevis uses other top hole
+    OPENING_ANGLE_DEG = requested_angle         # original (+Y) half; driven half solved from fixed links
+    
+    L = SLANT_LENGTH
+    C = RIM_CHORD
+    if PANELS != 4 or SLOTS_PER_BEND < 1:
+        raise ValueError("This macro requires four panels and at least one slot.")
+    if not (0 < C < 2*L and 0 < TIP_KEEP < L and 0 < RIM_KEEP < L-TIP_KEEP and THICKNESS > 0 and SLOT_WIDTH > 0):
+        raise ValueError("Invalid dimensions.")
+    alpha = 2 * math.asin(C / (2*L))
+    radius = C / (2*math.sin(math.pi/(2*PANELS)))
+    if radius >= L:
+        raise ValueError("Rim too large for the sloping length.")
+    height = math.sqrt(L*L - radius*radius)
+    # Equal slot lengths and equal internal bridges; both end margins stay intact.
+    pitch_piece = (L - TIP_KEEP - RIM_KEEP) / (2*SLOTS_PER_BEND - 1)
+    intervals = [(TIP_KEEP + 2*i*pitch_piece,
+                  TIP_KEEP + (2*i+1)*pitch_piece) for i in range(SLOTS_PER_BEND)]
+    angles = [math.pi/2 + (i-PANELS/2)*alpha for i in range(PANELS+1)]
+    V = App.Vector
+    origin = V(0,0,0)
+    rim = [V(L*math.cos(a), L*math.sin(a), 0) for a in angles]
+    
+    def face(points):
+        return Part.Face(Part.makePolygon(points + [points[0]]))
+    
+    uncut = face([origin] + rim)
+    cutters = []
+    for a in angles[1:-1]:
+        u, v = V(math.cos(a),math.sin(a),0), V(-math.sin(a),math.cos(a),0)
+        for start, end in intervals:
+            # All slots are enclosed; preserve the solid rim margin.
+            end_tool = end
+            cutters.append(face([u*start-v*(SLOT_WIDTH/2),
+                                 u*end_tool-v*(SLOT_WIDTH/2),
+                                 u*end_tool+v*(SLOT_WIDTH/2),
+                                 u*start+v*(SLOT_WIDTH/2)]))
+    
+    def perforate(shape):
+        for cutter in cutters:
+            shape = shape.cut(cutter)
+        return shape.removeSplitter()
+    
+    flat = perforate(uncut)
+    if not flat.isValid() or len(flat.Faces) != 1:
+        raise RuntimeError("Flat pattern is not a valid connected face.")
+    
+    def feature(doc, name, label, shape):
+        obj = doc.addObject("Part::Feature", name)
+        obj.Label = label
+        obj.Shape = shape
+        return obj
+    
+    def parameters(obj):
+        for name, val in [("SlantLength",L), ("RimChord",C),
+                          ("SheetThickness",THICKNESS), ("SlotWidth",SLOT_WIDTH),
+                          ("TipKeep",TIP_KEEP), ("RimKeep",RIM_KEEP),
+                          ("SlotAndBridgeLength",pitch_piece),
+                          ("RimRadius",radius), ("AxialHeight",height)]:
+            obj.addProperty("App::PropertyLength",name,"Design reference")
+            setattr(obj,name,val)
+            obj.setEditorMode(name,1)
+        obj.addProperty("App::PropertyString","ModelNotes","Design reference")
+        obj.ModelNotes = "Edit constants in macro and rerun; dimensions on mid-surface; ideal sharp bends, no bend allowance."
+    
+    try:
+        macro_dir = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        macro_dir = App.getUserMacroDir(True)
+    save_dir = os.path.abspath(os.path.expanduser(OUTPUT_DIR or macro_dir))
+    os.makedirs(save_dir, exist_ok=True)
+    
+    def save_doc(doc, stem):
+        # Avoid overwriting previous user models when rerunning.
+        base = os.path.join(save_dir,stem)
+        index = 1
+        while any(os.path.exists(base+ext) for ext in (".FCStd",".step",".dxf")):
+            base = os.path.join(save_dir,stem+"_"+str(index))
+            index += 1
+        doc.recompute()
+        doc.saveAs(base+".FCStd")
+        return base
+    
+    def dxf_write(path, polylines):
+        # Minimal ASCII DXF, millimetres. No Draft workbench dependency.
+        data = ["0","SECTION","2","HEADER","9","$ACADVER","1","AC1015",
+                "9","$INSUNITS","70","4","9","$MEASUREMENT","70","1",
+                "0","ENDSEC","0","SECTION","2","ENTITIES"]
+        for layer, points, closed in polylines:
+            data += ["0","LWPOLYLINE","100","AcDbEntity","8",layer,
+                     "100","AcDbPolyline","90",str(len(points)),"70",str(int(closed))]
+            for p in points:
+                data += ["10",format(p.x,".12g"),"20",format(p.y,".12g")]
+        data += ["0","ENDSEC","0","EOF"]
+        with open(path,"w",encoding="ascii") as stream:
+            stream.write("\n".join(data)+"\n")
+    
+    def view(doc, obj, top=False):
+        if App.GuiUp:
+            import FreeCADGui as Gui
+            obj.ViewObject.ShapeColor = (0.78,0.80,0.83)
+            obj.ViewObject.LineColor = (0.12,0.12,0.15)
+            if top:
+                Gui.activeDocument().activeView().viewTop()
+            else:
+                Gui.activeDocument().activeView().viewRight()
+            Gui.activeDocument().activeView().fitAll()
+        doc.recompute()
+    
+    # Exact isometric mapping of the four perforated triangular mid-surfaces.
+    fold_rim = [V(radius*math.cos(i*math.pi/PANELS),
+                  radius*math.sin(i*math.pi/PANELS),height) for i in range(PANELS+1)]
+    panels = []
+    mid_faces = []
+    normals = []
+    for i in range(PANELS):
+        triangle = perforate(face([origin,rim[i],rim[i+1]]))
+        a = angles[i]
+        # Local 2D basis: radial u and in-plane perpendicular v.
+        U = fold_rim[i]*(1/L)
+        W = fold_rim[i+1]*(1/L)
+        T = (W-U*math.cos(alpha))*(1/math.sin(alpha))
+        N = U.cross(T)
+        N.normalize()
+        normals.append(N)
+        ex = U*math.cos(a)-T*math.sin(a)
+        ey = U*math.sin(a)+T*math.cos(a)
+        matrix = App.Matrix()
+        matrix.A11,matrix.A21,matrix.A31 = ex.x,ex.y,ex.z
+        matrix.A12,matrix.A22,matrix.A32 = ey.x,ey.y,ey.z
+        matrix.A13,matrix.A23,matrix.A33 = N.x,N.y,N.z
+        triangle.transformShape(matrix,True)
+        mid_faces.append(triangle.copy())
+        # Add thickness NORMAL to the panel. This gives a square-cut 2 mm
+        # rim instead of the former ~5.91 mm vertically extruded rim wall.
+        # Start with an oversized planar patch; trim its sides in the shared
+        # radial miter planes so adjacent panels meet without gaps/overlaps.
+        margin = 10*THICKNESS
+        m = (rim[i]+rim[i+1])*0.5
+        along = m*(1/m.Length)
+        across = rim[i+1]-rim[i]
+        across.normalize()
+        half_width = C/2 + margin
+        patch = face([m-across*half_width, m+across*half_width,
+                      -along*margin+across*half_width,
+                      -along*margin-across*half_width])
+        patch.transformShape(matrix,True)
+        patch.translate(N*(-THICKNESS/2))
+        solid = patch.extrude(N*THICKNESS)
+        reach = 4*L
+        lo, hi = i*math.pi/PANELS, (i+1)*math.pi/PANELS
+        wedge = face([V(0,0,-reach),
+                      V(reach*math.cos(lo),reach*math.sin(lo),-reach),
+                      V(reach*math.cos(hi),reach*math.sin(hi),-reach)])
+        solid = solid.common(wedge.extrude(V(0,0,2*reach)))
+        # Keep the existing developed slot geometry across the miter planes.
+        # Axial tool sweeps make adjoining half-slots meet.
+        # All slots stop before the rim, leaving the specified solid margin.
+        for slot_angle in angles[1:-1]:
+            u = V(math.cos(slot_angle),math.sin(slot_angle),0)
+            v = V(-math.sin(slot_angle),math.cos(slot_angle),0)
+            for start,end in intervals:
+                end_tool = end
+                tool = face([u*start-v*(SLOT_WIDTH/2),
+                             u*end_tool-v*(SLOT_WIDTH/2),
+                             u*end_tool+v*(SLOT_WIDTH/2),
+                             u*start+v*(SLOT_WIDTH/2)])
+                tool.transformShape(matrix,True)
+                depth = 4*THICKNESS/abs(N.z)
+                tool.translate(V(0,0,-depth/2))
+                solid = solid.cut(tool.extrude(V(0,0,depth)))
+        panels.append(solid.removeSplitter())
+    
+    folded = panels[0]
+    for p in panels[1:]:
+        folded = folded.fuse(p)
+    folded = folded.removeSplitter()
+    if not folded.isValid() or len(folded.Solids) != 1:
+        raise RuntimeError("Folded model must be one valid connected solid.")
+    # One continuous horizontal polygonal half-ring fitted to the OUTSIDE of the
+    # actual square-cut cone rim, rather than to its theoretical mid-surface.
+    # Nominal edge-to-edge contact for welding; no joint clearance/weld bead.
+    if FLANGE_WIDTH <= 0 or FLANGE_THICKNESS <= 0:
+        raise ValueError("Flange dimensions must be positive.")
+    half_step = math.pi/(2*PANELS)
+    apothem = radius*math.cos(half_step)
+    normal_z = abs(normals[0].z)
+    normal_horizontal = math.sqrt(1-normal_z*normal_z)
+    inner_apothem = apothem + THICKNESS*normal_horizontal/2
+    outer_apothem = inner_apothem + FLANGE_WIDTH
+    inner_radius = inner_apothem/math.cos(half_step)
+    outer_radius = outer_apothem/math.cos(half_step)
+    flange_bottom_z = height - THICKNESS*normal_z/2
+    inner_chord = 2*inner_apothem*math.tan(half_step)
+    outer_chord = 2*outer_apothem*math.tan(half_step)
+    
+    # A single closed ten-vertex contour: outer chain then reversed inner
+    # chain. The open back remains open; there are NO internal miter cuts.
+    outer_points = [V(outer_radius*math.cos(i*math.pi/PANELS),
+                      outer_radius*math.sin(i*math.pi/PANELS),0)
+                    for i in range(PANELS+1)]
+    inner_points = [V(inner_radius*math.cos(i*math.pi/PANELS),
+                      inner_radius*math.sin(i*math.pi/PANELS),0)
+                    for i in range(PANELS+1)]
+    cut_points = outer_points + list(reversed(inner_points))
+    flange_uncut = face(cut_points)
+    flange_flat = flange_uncut.copy()
+    mount_slot_polygons = []
+    for slot_x in (-MOUNT_SLOT_X,MOUNT_SLOT_X):
+        hx,hy = MOUNT_SLOT_WIDTH/2,MOUNT_SLOT_LENGTH/2
+        if min(hx,hy) <= 0:
+            raise ValueError("Mounting slot dimensions must be positive.")
+        points = [V(slot_x-hx,MOUNT_SLOT_Y-hy,0),V(slot_x+hx,MOUNT_SLOT_Y-hy,0),
+                  V(slot_x+hx,MOUNT_SLOT_Y+hy,0),V(slot_x-hx,MOUNT_SLOT_Y+hy,0)]
+        cutter = face(points)
+        if abs(cutter.common(flange_uncut).Area-cutter.Area)>1e-7:
+            raise ValueError("Mounting slot is not fully inside the flange.")
+        mount_slot_polygons.append(points)
+        flange_flat = flange_flat.cut(cutter)
+    flange_flat = flange_flat.removeSplitter()
+    if not flange_flat.isValid() or len(flange_flat.Faces)!=1 or len(flange_flat.Wires)!=3:
+        raise RuntimeError("Expected one connected flange face with two enclosed slots.")
+    flange_solid = flange_flat.extrude(V(0,0,FLANGE_THICKNESS))
+    flange_solid.translate(V(0,0,flange_bottom_z))
+    if not flange_solid.isValid() or len(flange_solid.Solids) != 1:
+        raise RuntimeError("Continuous flange must be one valid solid.")
+    
+    doc = App.newDocument("DemiConeSideView")
+    cone_obj = feature(doc,"FoldedSheet","Demi-cone - 2 mm steel, enclosed slots",folded)
+    parameters(cone_obj)
+    flange_obj = feature(doc,"ContinuousFlange","One-piece flange - two 20.2 x 3.2 mm mounting slots",flange_solid)
+    for name,value in [("Width",FLANGE_WIDTH),("Thickness",FLANGE_THICKNESS),
+                       ("MountSlotLength",MOUNT_SLOT_LENGTH),("MountSlotWidth",MOUNT_SLOT_WIDTH),
+                       ("MountSlotCentreX",MOUNT_SLOT_X),("MountSlotCentreY",MOUNT_SLOT_Y),
+                       ("InnerFacetLength",inner_chord),("OuterFacetLength",outer_chord)]:
+        flange_obj.addProperty("App::PropertyLength",name,"Flange dimensions")
+        setattr(flange_obj,name,value)
+        flange_obj.setEditorMode(name,1)
+    cut_obj = feature(doc,"FlangeCutLayout","Flange cutting outline with two enclosed mounting slots",flange_flat)
+    cut_obj.Visibility = False
+    # Bracket flat profile: X = width, Y = length, Z = thickness.
+    # The two rounded corners are at the hole/top end only.
+    w,h,t,r = BRACKET_WIDTH,BRACKET_LENGTH,BRACKET_THICKNESS,BRACKET_TOP_RADIUS
+    if not (0 < 2*r <= w and r < h and 0 < t < MOUNT_SLOT_WIDTH and w < MOUNT_SLOT_LENGTH):
+        raise ValueError("Invalid bracket dimensions or bracket does not fit mounting slots.")
+    hole_y = h-BRACKET_HOLE_FROM_TOP
+    hole_r = BRACKET_HOLE_DIAMETER/2
+    hole_centres_y = [hole_y-i*BRACKET_HOLE_SPACING for i in range(BRACKET_HOLE_COUNT)]
+    if BRACKET_HOLE_SPACING <= BRACKET_HOLE_DIAMETER:
+        raise ValueError("Bracket holes must not overlap.")
+    if any(min(y,h-y,w/2) <= hole_r for y in hole_centres_y):
+        raise ValueError("Bracket hole must be enclosed inside the profile.")
+    a,b,c,d,e,f = V(0,0,0),V(w,0,0),V(w,h-r,0),V(w-r,h,0),V(r,h,0),V(0,h-r,0)
+    q = r/math.sqrt(2)
+    outline = Part.Wire([Part.makeLine(a,b),Part.makeLine(b,c),
+                        Part.Arc(c,V(w-r+q,h-r+q,0),d).toShape(),
+                        Part.makeLine(d,e),
+                        Part.Arc(e,V(r-q,h-r+q,0),f).toShape(),
+                        Part.makeLine(f,a)])
+    bracket_outline_face = Part.Face(outline)
+    # Broad ear with rounded end supports the relocated middle pivot.
+    boss_x=w/2+PIVOT_OFFSET
+    boss_y=hole_centres_y[1]
+    lo=boss_y-PIVOT_BOSS_RADIUS
+    hi=boss_y+PIVOT_BOSS_RADIUS
+    p1,p2,p3,p4=V(w,lo,0),V(boss_x,lo,0),V(boss_x,hi,0),V(w,hi,0)
+    outline=Part.Wire([Part.makeLine(a,b),Part.makeLine(b,p1),
+        Part.makeLine(p1,p2),Part.Arc(p2,V(boss_x+PIVOT_BOSS_RADIUS,boss_y,0),p3).toShape(),
+        Part.makeLine(p3,p4),Part.makeLine(p4,c),
+        Part.Arc(c,V(w-r+q,h-r+q,0),d).toShape(),Part.makeLine(d,e),
+        Part.Arc(e,V(r-q,h-r+q,0),f).toShape(),Part.makeLine(f,a)])
+    bracket_outline_face=Part.Face(outline)
+    bracket_flat = bracket_outline_face.copy()
+    for hole_index,centre_y in enumerate(hole_centres_y):
+        centre_x=boss_x if hole_index==1 else w/2
+        hole_face = Part.Face(Part.Wire([Part.makeCircle(hole_r,V(centre_x,centre_y,0))]))
+        bracket_flat = bracket_flat.cut(hole_face)
+    if not bracket_flat.isValid() or len(bracket_flat.Wires)!=1+BRACKET_HOLE_COUNT:
+        raise RuntimeError("Bracket profile or hole is invalid.")
+    bracket_blank = bracket_flat.extrude(V(0,0,t))
+    bracket_objects = []
+    bracket_solids = []
+    for i,slot_x in enumerate((-MOUNT_SLOT_X,MOUNT_SLOT_X),1):
+        # local X -> world Y, local Y -> world Z, local Z -> world X.
+        matrix = App.Matrix()
+        matrix.A11,matrix.A21,matrix.A31 = 0,1,0
+        matrix.A12,matrix.A22,matrix.A32 = 0,0,1
+        matrix.A13,matrix.A23,matrix.A33 = 1,0,0
+        matrix.A14 = slot_x-t/2
+        matrix.A24 = MOUNT_SLOT_Y-w/2
+        matrix.A34 = flange_bottom_z-BRACKET_BELOW_FLANGE
+        solid = bracket_blank.copy()
+        solid.transformShape(matrix,True)
+        if not solid.isValid() or len(solid.Solids)!=1:
+            raise RuntimeError("Invalid installed bracket.")
+        bracket = feature(doc,"Bracket%d"%i,"Upright bracket %d - 20 mm offset pivot, R12 support ear, 3 mm thick"%i,solid)
+        for name,value in [("PivotOffset",PIVOT_OFFSET),("PivotBossRadius",PIVOT_BOSS_RADIUS),("Width",w),("Length",h),("Thickness",t),("TopRadius",r),
+                           ("HoleDiameter",BRACKET_HOLE_DIAMETER),
+                           ("HoleFromTop",BRACKET_HOLE_FROM_TOP),
+                           ("HoleSpacing",BRACKET_HOLE_SPACING),
+                           ("BelowFlange",BRACKET_BELOW_FLANGE)]:
+            bracket.addProperty("App::PropertyLength",name,"Bracket dimensions")
+            setattr(bracket,name,value)
+            bracket.setEditorMode(name,1)
+        bracket_objects.append(bracket)
+        bracket_solids.append(solid)
+    # Pair the complete demi-cone assemblies about their shared Z axis.
+    # Their original open-back boundary is Y=0, so rotation alone mates them.
+    # Keep both cones and flanges separate, including their shared butt seams.
+    # Tube ends butt against the inner bracket faces; part belongs to the
+    # moving welded half, not the fixed pivot group. Weld beads omitted.
+    tube_length=2*MOUNT_SLOT_X-BRACKET_THICKNESS
+    tube_start=V(-tube_length/2,MOUNT_SLOT_Y+PIVOT_OFFSET,
+                 flange_bottom_z-BRACKET_BELOW_FLANGE+hole_centres_y[1])
+    tube_shape=Part.makeCylinder(9,tube_length,tube_start,V(1,0,0)).cut(
+        Part.makeCylinder(7,tube_length,tube_start,V(1,0,0)))
+    pivot_tube=feature(doc,"WeldedPivotTube","Welded pivot tube - OD18 ID14 x 124 mm",tube_shape)
+    for key,val in [("OutsideDiameter",18),("InsideDiameter",14),("Length",tube_length)]:
+        pivot_tube.addProperty("App::PropertyLength",key,"Tube dimensions")
+        setattr(pivot_tube,key,val)
+        pivot_tube.setEditorMode(key,1)
+    # Horizontal projecting arm, vertical YZ plate; duplicate on other half.
+    # 84 x 24 x 6 envelope, R6 corners, hole 10 from far end and top.
+    arm_x=0.0  # centred along the 124 mm tube axis
+    arm_y=MOUNT_SLOT_Y+PIVOT_OFFSET-9.0  # total inward shift
+    arm_z=tube_start.z
+    arm=Part.makeBox(6,84,24,V(arm_x-3,arm_y,arm_z-12))
+    corner_edges=[ed for ed in arm.Edges if abs(ed.Length-6)<1e-7]
+    arm=arm.makeFillet(6,corner_edges)
+    arm=arm.cut(Part.makeCylinder(9,8,V(arm_x-4,MOUNT_SLOT_Y+PIVOT_OFFSET,arm_z),V(1,0,0)))
+    # Trim the inner root edge to clear the fixed band throughout opening.
+    arm=arm.cut(Part.makeBox(20,100,100,V(-10,60.59-100,arm_z-50))).removeSplitter()
+    # Four Ø10 holes, 15 mm pitch; nearest centre 20 mm from tube axis.
+    # A fifth hole would intersect the Ø18 tube.
+    for offset in (74,59,44,29):
+        arm=arm.cut(Part.makeCylinder(5,8,V(arm_x-4,arm_y+offset,arm_z+2),V(1,0,0)))
+    arm=arm.removeSplitter()
+    horizontal_arm=feature(doc,"HorizontalTubeBracket","Horizontal tube bracket - 84 x 24 x 6, four holes dia 10 at 15 pitch",arm)
+    original_objects = [cone_obj,flange_obj]+bracket_objects+[pivot_tube,horizontal_arm]
+    original_group = doc.addObject("App::DocumentObjectGroup","OriginalHalf")
+    original_group.Label = "Half A - original assembly"
+    rotated_group = doc.addObject("App::DocumentObjectGroup","RotatedHalf")
+    rotated_group.Label = "Half B - rotated 180 degrees about Z"
+    rotated_objects = []
+    for original in original_objects:
+        original_group.addObject(original)
+        rotated_shape = original.Shape.copy()
+        rotated_shape.rotate(V(0,0,0),V(0,0,1),180)
+        duplicate = feature(doc,original.Name+"_Rotated",original.Label+" - rotated half",rotated_shape)
+        for prop in original.PropertiesList:
+            if original.getTypeIdOfProperty(prop)=="App::PropertyLength":
+                duplicate.addProperty("App::PropertyLength",prop,"Design reference")
+                setattr(duplicate,prop,getattr(original,prop))
+                duplicate.setEditorMode(prop,1)
+        rotated_group.addObject(duplicate)
+        rotated_objects.append(duplicate)
+    assembly_objects = original_objects+rotated_objects
+    for component in assembly_objects:
+        if not component.Shape.isValid() or len(component.Shape.Solids)!=1:
+            raise RuntimeError("Every assembly component must be one valid solid.")
+    # Two tie rods: same-X side connections from ORIGINAL upper holes
+    # (Y positive) to ROTATED lower holes (Y negative). Eyes mount outboard.
+    tie_objects = []
+    tie_endpoints = []
+    axis_z = V(0,0,1)
+    def hardware(group,name,label,shape,color=(0.68,0.70,0.73)):
+        shape = shape.removeSplitter()
+        if not shape.isValid() or len(shape.Solids)!=1:
+            raise RuntimeError("Invalid tie-rod component: "+name)
+        obj = feature(doc,name,label,shape)
+        group.addObject(obj)
+        if App.GuiUp:
+            obj.ViewObject.ShapeColor = color
+        tie_objects.append(obj)
+        return obj
+    
+    def ring(radius,bore,length,start,axis):
+        return Part.makeCylinder(radius,length,start,axis).cut(
+               Part.makeCylinder(bore,length+2,start-axis,axis))
+    
+    def hex_nut(start,axis,thickness,across_flats=10.0):
+        ref = V(0,0,1) if abs(axis.z)<0.9 else V(1,0,0)
+        ex = axis.cross(ref);ex.normalize()
+        ey = axis.cross(ex);ey.normalize()
+        rr = across_flats/math.sqrt(3)
+        points = [start+ex*(rr*math.cos(i*math.pi/3))+ey*(rr*math.sin(i*math.pi/3)) for i in range(6)]
+        return face(points).extrude(axis*thickness).cut(
+            Part.makeCylinder(ROD_THREAD_DIAMETER/2,thickness+2,start-axis,axis))
+    
+    bracket_bottom_z = flange_bottom_z-BRACKET_BELOW_FLANGE
+    upper_z = bracket_bottom_z+hole_centres_y[0]
+    lower_z = bracket_bottom_z+hole_centres_y[-1]
+    # Fixed X-axis pivots moved outward 20 mm on each half.
+    pivot_z = bracket_bottom_z+hole_centres_y[1]
+    pivot_original = V(0,MOUNT_SLOT_Y+PIVOT_OFFSET,pivot_z)
+    pivot_rotated = V(0,-MOUNT_SLOT_Y-PIVOT_OFFSET,pivot_z)
+    input_angle = math.radians(OPENING_ANGLE_DEG)
+    upper_arm = upper_z-pivot_z
+    lower_arm = pivot_z-lower_z
+    fixed_link_length = math.hypot(2*MOUNT_SLOT_Y,upper_z-lower_z)
+    if min(upper_arm,lower_arm) <= 0:
+        raise ValueError("Upper and lower link holes must straddle the fixed middle pivots.")
+    # In the YZ plane, solve the circle-circle closure equation for the
+    # follower. Choose the branch connected continuously to the closed pose.
+    # A is the original upper hole relative to the follower's fixed pivot.
+    distance_y = 2*(MOUNT_SLOT_Y+PIVOT_OFFSET)-PIVOT_OFFSET*math.cos(input_angle)-upper_arm*math.sin(input_angle)
+    distance_z = -PIVOT_OFFSET*math.sin(input_angle)+upper_arm*math.cos(input_angle)
+    # Follower lower-hole vector at zero: (offset, -lower_arm).
+    cc = PIVOT_OFFSET*distance_y-lower_arm*distance_z
+    ss = lower_arm*distance_y+PIVOT_OFFSET*distance_z
+    rhs = (distance_y**2+distance_z**2+PIVOT_OFFSET**2+lower_arm**2-fixed_link_length**2)/2
+    radius=math.hypot(cc,ss)
+    if abs(rhs)>radius+1e-9:
+        raise ValueError("Requested input angle cannot satisfy the fixed-link constraint.")
+    phase=math.atan2(ss,cc)
+    root=math.acos(max(-1,min(1,rhs/radius)))
+    candidates=[(a+math.pi)%(2*math.pi)-math.pi for a in (phase+root,phase-root)]
+    follower_angle=min(candidates,key=abs)
+    follower_degrees = math.degrees(follower_angle)
+    def rotate_point_x(point,pivot,degrees):
+        return pivot+App.Rotation(V(1,0,0),degrees).multVec(point-pivot)
+    for members,pivot,degrees in [(original_objects,pivot_original,OPENING_ANGLE_DEG),
+                                  (rotated_objects,pivot_rotated,follower_degrees)]:
+        for member in members:
+            shape=member.Shape.copy()
+            shape.rotate(pivot,V(1,0,0),degrees)
+            member.Shape=shape
+    original_group.Label = "Original half (+Y) - outward %.6f degrees"%OPENING_ANGLE_DEG
+    rotated_group.Label = "Rotated half (-Y) - outward %.6f degrees"%abs(follower_degrees)
+    for group,angle in [(original_group,OPENING_ANGLE_DEG),(rotated_group,follower_degrees)]:
+        group.addProperty("App::PropertyAngle","AngleAboutPositiveX","Kinematics")
+        group.AngleAboutPositiveX=angle
+        group.setEditorMode("AngleAboutPositiveX",1)
+    for side,side_name in [(-1,"Left"),(1,"Right")]:
+        axis = V(side,0,0)
+        group = doc.addObject("App::DocumentObjectGroup","TieRod"+side_name)
+        group.Label = side_name+" tie rod - original upper to rotated lower"
+        stand_off=RIGHT_TIE_SPACER if side>0 else ROD_END_SPACER
+        eye_x = side*(MOUNT_SLOT_X+BRACKET_THICKNESS/2+stand_off+ROD_END_BALL_WIDTH/2)
+        A = V(eye_x,MOUNT_SLOT_Y,upper_z)
+        B = V(eye_x,-MOUNT_SLOT_Y,lower_z)
+        A = rotate_point_x(A,pivot_original,OPENING_ANGLE_DEG)
+        B = rotate_point_x(B,pivot_rotated,follower_degrees)
+        if abs((B-A).Length-fixed_link_length)>1e-7:
+            raise RuntimeError("Fixed tie-rod length constraint failed.")
+        separation = (B-A).Length
+        direction = (B-A)*(1/separation)
+        tie_endpoints.append((A,B))
+        if separation <= 2*ROD_END_EYE_TO_MOUTH+6:
+            raise ValueError("Selected rod ends are too long for the hole spacing.")
+        group.addProperty("App::PropertyLength","EyeCentreDistance","Dimensions")
+        group.EyeCentreDistance = separation
+        group.setEditorMode("EyeCentreDistance",1)
+        group.addProperty("App::PropertyString","ModelNotes","Dimensions")
+        group.ModelNotes = "Illustrative 6 mm bore female rod ends; assumed external sizes; smooth nominal M6 threads; no motion simulation."
+        for end_name,centre,towards in [("Upper",A,direction),("Lower",B,-direction)]:
+            key = side_name+end_name
+            eye = Part.makeCylinder(ROD_END_EYE_OD/2,ROD_END_HOUSING_WIDTH,
+                                   centre-axis*(ROD_END_HOUSING_WIDTH/2),axis)
+            boss = Part.makeCylinder(ROD_END_SHANK_OD/2,ROD_END_EYE_TO_MOUTH-6,
+                                    centre+towards*6,towards)
+            housing = eye.fuse(boss).cut(Part.makeSphere(ROD_END_BALL_RADIUS+0.05,centre,axis))
+            female_start = centre+towards*(ROD_END_EYE_TO_MOUTH-ROD_THREAD_ENGAGEMENT)
+            housing = housing.cut(Part.makeCylinder(ROD_THREAD_DIAMETER/2,
+                                  ROD_THREAD_ENGAGEMENT+1,female_start,towards))
+            hardware(group,key+"RodEnd","Female rod end housing - "+key,housing)
+            ball = Part.makeSphere(ROD_END_BALL_RADIUS,centre,axis).common(
+                Part.makeCylinder(ROD_END_BALL_RADIUS+1,ROD_END_BALL_WIDTH,
+                                  centre-axis*(ROD_END_BALL_WIDTH/2),axis))
+            ball = ball.cut(Part.makeCylinder(BRACKET_HOLE_DIAMETER/2,
+                        ROD_END_BALL_WIDTH+2,centre-axis*(ROD_END_BALL_WIDTH/2+1),axis))
+            hardware(group,key+"Ball","Spherical insert - 6 mm bore - "+key,ball,(0.82,0.84,0.87))
+            # Spacer touches only the inner ball insert, clear of the housing.
+            bracket_outer = V(side*(MOUNT_SLOT_X+BRACKET_THICKNESS/2),centre.y,centre.z)
+            hardware(group,key+"Spacer","1 mm stand-off spacer - "+key,
+                     ring(5,3.1,stand_off,bracket_outer,axis))
+            washer_start = centre+axis*(ROD_END_BALL_WIDTH/2)
+            hardware(group,key+"Washer","Outer washer - "+key,ring(5,3.1,1,washer_start,axis))
+            bracket_inner = V(side*(MOUNT_SLOT_X-BRACKET_THICKNESS/2),centre.y,centre.z)
+            grip = (washer_start+axis-bracket_inner).Length
+            bolt_shaft = Part.makeCylinder(3,grip+3,bracket_inner,axis)
+            # Unthreaded simplified hex-head pivot bolt. Exact 6 mm nominal bore.
+            ref = V(0,0,1);ex=axis.cross(ref);ex.normalize();ey=axis.cross(ex)
+            start=bracket_inner-axis*3
+            pts=[start+ex*(5.773502692*math.cos(i*math.pi/3))+ey*(5.773502692*math.sin(i*math.pi/3)) for i in range(6)]
+            bolt = bolt_shaft.fuse(face(pts).extrude(axis*3))
+            hardware(group,key+"PivotBolt","Nominal M6 pivot bolt - "+key,bolt,(0.52,0.55,0.59))
+            hardware(group,key+"PivotNut","Nominal M6 pivot nut - "+key,hex_nut(washer_start+axis,axis,3))
+            hardware(group,key+"JamNut","Nominal M6 tie-rod jam nut - "+key,
+                     hex_nut(centre+towards*ROD_END_EYE_TO_MOUTH,towards,3))
+        stud_start = A+direction*(ROD_END_EYE_TO_MOUTH-ROD_THREAD_ENGAGEMENT)
+        stud_length = separation-2*(ROD_END_EYE_TO_MOUTH-ROD_THREAD_ENGAGEMENT)
+        stud = hardware(group,side_name+"ThreadedTieRod","M6 tie rod - nominal threads - "+side_name,
+                        Part.makeCylinder(ROD_THREAD_DIAMETER/2,stud_length,stud_start,direction),(0.50,0.53,0.57))
+        stud.addProperty("App::PropertyLength","NominalLength","Dimensions")
+        stud.NominalLength = stud_length
+        stud.setEditorMode("NominalLength",1)
+    assembly_objects += tie_objects
+    # Straight bars follow the existing middle-hole axes, parallel to X.
+    # One bar crosses each demi-cone half; both are centred on X=0.
+    if PLAIN_BAR_LENGTH <= 2*MOUNT_SLOT_X+BRACKET_THICKNESS:
+        raise ValueError("Plain bars must extend beyond both outer bracket faces.")
+    if not (0 < PLAIN_BAR_DIAMETER <= BRACKET_HOLE_DIAMETER):
+        raise ValueError("Plain bars must fit the bracket hole diameter.")
+    plain_bar_group = doc.addObject("App::DocumentObjectGroup","cone_rotation_pivots")
+    plain_bar_group.Label = "cone_rotation_pivots"
+    plain_bar_objects = []
+    middle_hole_z = bracket_bottom_z+hole_centres_y[1]
+    bar_projection = PLAIN_BAR_LENGTH/2-MOUNT_SLOT_X-BRACKET_THICKNESS/2
+    for index,bar_y in enumerate((MOUNT_SLOT_Y+PIVOT_OFFSET,-MOUNT_SLOT_Y-PIVOT_OFFSET),1):
+        bar_shape = Part.makeCylinder(PLAIN_BAR_DIAMETER/2,PLAIN_BAR_LENGTH,
+                                      V(-PLAIN_BAR_LENGTH/2,bar_y,middle_hole_z),V(1,0,0))
+        bar = feature(doc,"cone_rotation_pivot_%d"%index,"cone_rotation_pivot_%d - fixed 150 x diameter 6 mm"%index,bar_shape)
+        for name,value in [("Length",PLAIN_BAR_LENGTH),("Diameter",PLAIN_BAR_DIAMETER),
+                           ("EndProjection",bar_projection)]:
+            bar.addProperty("App::PropertyLength",name,"Bar dimensions")
+            setattr(bar,name,value)
+            bar.setEditorMode(name,1)
+        plain_bar_group.addObject(bar)
+        plain_bar_objects.append(bar)
+        if App.GuiUp:
+            bar.ViewObject.ShapeColor = (0.75,0.77,0.80)
+    assembly_objects += plain_bar_objects
+    # Flowfit 71220/25 catalogue envelope, local axis Z.
+    # Rear pin Z=9; body front=116; thread start=127; thread end=145.
+    # E=118 excludes the M10 thread and custom clevis. Clevis pin=158.
+    # Custom clevis updated to 10 mm pin. Taper/plug details illustrative.
+    # Source: https://www.flowfitonline.com/products/mini-double-acting-hydraulic-cylinder-20mm-bore-x-12mm-rod-x-25mm-stroke
+    # Fixed rear mount and swivelling cylinder solved for every pose.
+    # LHS new bracket: fixed rear mount above pin; cylinder vertical at zero.
+    # 22 mm initial extension permits retraction as the new arm rises.
+    if CLEVIS_HOLE_INDEX not in (0,1,2,3):
+        raise ValueError("CLEVIS_HOLE_INDEX must be 0, 1, 2 or 3.")
+    closed_clevis=V(0,-(MOUNT_SLOT_Y+PIVOT_OFFSET-9+74-15*CLEVIS_HOLE_INDEX),pivot_z+2)
+    cylinder_base=closed_clevis+V(0,0,149+22)
+    clevis_centre=rotate_point_x(closed_clevis,pivot_rotated,follower_degrees)
+    cyl_axis=clevis_centre-cylinder_base
+    pin_distance=cyl_axis.Length;cyl_axis.normalize()
+    extension=pin_distance-149.0
+    if not (0<=extension<=CYL_STROKE):
+        raise ValueError("Required extension exceeds the retained 25 mm operating envelope.")
+    # Local X is the transverse pin direction, local Y faces upwards.
+    xx=V(-1,0,0);yy=cyl_axis.cross(xx);yy.normalize()
+    trans=App.Matrix()
+    trans.A11,trans.A21,trans.A31=xx.x,xx.y,xx.z
+    trans.A12,trans.A22,trans.A32=yy.x,yy.y,yy.z
+    trans.A13,trans.A23,trans.A33=cyl_axis.x,cyl_axis.y,cyl_axis.z
+    shift=cylinder_base-cyl_axis*9
+    trans.A14,trans.A24,trans.A34=shift.x,shift.y,shift.z
+    cyl_group=doc.addObject("App::DocumentObjectGroup","Detailed_Mini_Hydraulic_Cylinder_with_Clevis")
+    cyl_group.Label="Detailed_Mini_Hydraulic_Cylinder_with_Clevis - %.3f mm extension"%extension
+    def add_detail(name,label,shape,local=True):
+        shape=shape.copy()
+        if local:shape.transformShape(trans,True)
+        if not shape.isValid():raise RuntimeError("Invalid detailed component: "+name)
+        obj=feature(doc,name,label,shape)
+        cyl_group.addObject(obj);assembly_objects.append(obj)
+        return obj
+    # G=28, F=35, H=47, I=60, C=9, D=10.
+    barrel=Part.makeCylinder(14,56)
+    collar=Part.makeCylinder(17.5,48,V(0,0,56))
+    taper=Part.makeCone(17.5,8.5,12,V(0,0,104))
+    body=barrel.fuse(collar).fuse(taper).cut(
+        Part.makeCylinder(5,40,V(-20,0,9),V(1,0,0))).removeSplitter()
+    def port(z,radius):
+        return Part.makeCylinder(6,2,V(0,radius-1,z),V(0,1,0)).fuse(
+            Part.makeCylinder(5,3,V(0,radius+1,z),V(0,1,0)))
+    # J=15 from rear pin; K=23.5 back from body front. 1/8 BSP nominal.
+    rear_plug=port(24,14);front_plug=port(92.5,17.5)
+    # Relieve the concealed plug seating volumes, retaining the visible source shape.
+    body=body.cut(rear_plug).cut(front_plug).removeSplitter()
+    body_obj=add_detail("DetailedCylinderBody","Flowfit 71220/25 - corrected catalogue envelope",body)
+    for name,val in [("Extension",extension),("PinToEye",pin_distance),("RearBore",10),
+                     ("ClevisBore",10),("RetractedPinDistance",149)]:
+        body_obj.addProperty("App::PropertyLength",name,"Reference dimensions")
+        setattr(body_obj,name,val);body_obj.setEditorMode(name,1)
+    body_obj.addProperty("App::PropertyString","SourceFile","Reference dimensions")
+    body_obj.SourceFile="Flowfit 71220/25 dimensional drawing; custom clevis retained"
+    # Extend the exposed rod only; body stays rigid and swivels on its base pin.
+    rod=Part.makeCylinder(6,11+extension,V(0,0,116))
+    thread=Part.makeCylinder(5,18,V(0,0,127+extension))
+    points=[V(8*math.cos(i*math.pi/3),8*math.sin(i*math.pi/3),129+extension) for i in range(6)]
+    nut=face(points).extrude(V(0,0,5)).cut(Part.makeCylinder(5,5,V(0,0,129+extension)))
+    full_rod=rod.fuse(thread).fuse(nut).removeSplitter()
+    add_detail("DetailedPistonRodAssembly","Piston rod - 12 mm, M10 x 18 mm, 25 mm stroke",full_rod)
+    clevis_base=Part.makeCylinder(8,8)
+    clevis_fork=Part.makeBox(16,16,16,V(-8,-8,8))
+    clevis_top=Part.makeCylinder(8,16,V(-8,0,24),V(1,0,0))
+    clevis=clevis_base.fuse(clevis_fork).fuse(clevis_top).cut(
+        Part.makeBox(8,18,26,V(-4,-9,10))).cut(
+        Part.makeCylinder(5,20,V(-10,0,24),V(1,0,0))).cut(
+        Part.makeCylinder(5,12)).removeSplitter()
+    clevis.translate(V(0,0,134+extension))
+    add_detail("DetailedClevisBracket","Clevis_Bracket - 8 mm fork gap, 10 mm pin",clevis)
+    add_detail("Port_Plug_Rear","Red rear port plug",rear_plug)
+    add_detail("Port_Plug_Front","Red front port plug",front_plug)
+    # Centre 6 mm arm in 8 mm fork with two 1 mm spacers.
+    for k,x in enumerate((-4,3),1):
+        add_detail("ClevisSpacer%d"%k,"Clevis spacer - 1 mm",
+            ring(7,5.1,1,V(x,clevis_centre.y,clevis_centre.z),V(1,0,0)),False)
+    add_detail("ClevisActuatingPin","10 mm pin through new horizontal bracket and clevis",
+        Part.makeCylinder(8,3,V(-11,clevis_centre.y,clevis_centre.z),V(1,0,0)).fuse(
+        Part.makeCylinder(5,20,V(-8,clevis_centre.y,clevis_centre.z),V(1,0,0))),False)
+    add_detail("ClevisPinWasher","10 mm clevis pin washer",
+        ring(8,5.1,1,V(8,clevis_centre.y,clevis_centre.z),V(1,0,0)),False)
+    # M10 nut simplified with exact nominal bore.
+    # Existing helper is M6; make this nut explicitly for the M10 pin.
+    pts=[V(9,clevis_centre.y+9*math.cos(i*math.pi/3),clevis_centre.z+9*math.sin(i*math.pi/3)) for i in range(6)]
+    nut_shape=face(pts).extrude(V(3,0,0)).cut(Part.makeCylinder(5,3,V(9,clevis_centre.y,clevis_centre.z),V(1,0,0)))
+    add_detail("ClevisPinNut","M10 clevis pin nut",nut_shape,False)
+    add_detail("cylinder_base_pin","Fixed rear swivel pin - 10 mm in catalogue 10 mm bore",
+        Part.makeCylinder(CYL_REAR_PIN_DIAMETER/2,50,cylinder_base-V(25,0,0),V(1,0,0)),False)
+    # Welded tubes rotate with their respective bracket assemblies.
+    # Circular coaxial tubes retain the same visible outline as they rotate.
+    for obj in assembly_objects:
+        moving_tube=obj.Name.startswith("WeldedPivotTube")
+        if moving_tube:
+            obj.addProperty("App::PropertyString","Attachment","Assembly")
+            obj.Attachment="Welded to both brackets of this cone half"
+            obj.addProperty("App::PropertyAngle","RotationAboutPivot","Assembly")
+            obj.RotationAboutPivot=follower_degrees if "Rotated" in obj.Name else OPENING_ANGLE_DEG
+        if App.GuiUp:
+            if moving_tube or obj.Name.startswith(("Bracket","HorizontalTubeBracket")):
+                obj.ViewObject.ShapeColor=(202/255.0,168/255.0,112/255.0)
+            elif obj.Name.startswith("cone_rotation_pivot_"):
+                obj.ViewObject.ShapeColor=(0.20,0.65,0.45)
+    # Fixed vertical hopper: outside radii; true 3 mm normal wall thickness.
+    band_z=flange_bottom_z+FLANGE_THICKNESS
+    hopper_z=band_z+40.0
+    hopper_height=110.0
+    radial_wall=3.0*math.sqrt(1.0+(22.0/hopper_height)**2)
+    outer=Part.makeCone(53,75,hopper_height,V(0,0,hopper_z))
+    inner=Part.makeCone(53-radial_wall,75-radial_wall,hopper_height,V(0,0,hopper_z))
+    # External strengthening rim: 5 mm downward from the existing top.
+    # Tapered inner contact follows the hopper, leaving its opening unchanged.
+    rim_z=hopper_z+hopper_height-5.0
+    rim_inner_bottom=75.0-(75.0-53.0)*5.0/hopper_height
+    rim=Part.makeCylinder(78,5,V(0,0,rim_z)).cut(
+        Part.makeCone(rim_inner_bottom,75,5,V(0,0,rim_z)))
+    hopper_shape=outer.cut(inner).fuse(rim).removeSplitter()
+    if not hopper_shape.isValid() or len(hopper_shape.Solids)!=1:
+        raise RuntimeError("Invalid strengthened hopper")
+    hopper=feature(doc,"RoundHopper","Fixed hopper with R78 x 5 strengthening rim",hopper_shape)
+    for key,value in [("RimOutsideRadius",78),("RimDepth",5),("Height",110),("BottomOuterRadius",53),("TopOuterRadius",75),("WallThickness",3),("LowerRimZ",hopper_z)]:
+        hopper.addProperty("App::PropertyLength",key,"Hopper dimensions")
+        setattr(hopper,key,value)
+    hopper.addProperty("App::PropertyString","MountingReference","Hopper dimensions")
+    hopper.MountingReference="Fixed; raised 40 mm above flange top plane; coaxial with lower band"
+    if App.GuiUp:
+        hopper.ViewObject.ShapeColor=(1.0,1.0,1.0)
+        hopper.ViewObject.Transparency=50
+    assembly_objects.append(hopper)
+    for name,label,ri,ro,transparent in [
+        ("HopperBaseBand","Hopper base band - H40, R50 to R53, wall 3",50.0,53.0,True),
+        ("SteelOuterBand","Steel outer band - H40, R53 to R55, wall 2",53.0,55.0,False)]:
+        shape=Part.makeCylinder(ro,40,V(0,0,band_z)).cut(Part.makeCylinder(ri,40,V(0,0,band_z)))
+        band=feature(doc,name,label,shape)
+        for key,value in [("Height",40),("InsideRadius",ri),("OutsideRadius",ro),("WallThickness",ro-ri)]:
+            band.addProperty("App::PropertyLength",key,"Band dimensions")
+            setattr(band,key,value)
+        if App.GuiUp:
+            band.ViewObject.ShapeColor=(1.,1.,1.) if transparent else (0.20,0.65,0.45)
+            band.ViewObject.Transparency=50 if transparent else 0
+        assembly_objects.append(band)
+    return doc, assembly_objects, follower_degrees
+
+overlay_doc = App.newDocument("DemiConeSideOverlay")
+overlay_doc.Label = "Round hopper with adjustable brackets - 0 and 20 deg"
+pose_groups = []
+pose_objects = []
+follower_angles = []
+for angle,group_name,color in [(0.0,"Closed_0deg",(0.20,0.43,0.72)),
+                                (20.0,"Opened_20deg",(0.94,0.43,0.12))]:
+    source_doc,source_objects,follower = build_pose(angle)
+    group = overlay_doc.addObject("App::DocumentObjectGroup",group_name)
+    group.Label = ("CLOSED 0 deg - blue" if angle==0 else "OPEN 20 deg - orange (follower %.3f deg)"%abs(follower))
+    group.addProperty("App::PropertyAngle","InputOpening","Comparison")
+    group.InputOpening=angle
+    group.addProperty("App::PropertyAngle","FollowerOpening","Comparison")
+    group.FollowerOpening=abs(follower)
+    group.setEditorMode("InputOpening",1)
+    group.setEditorMode("FollowerOpening",1)
+    copies=[]
+    for source_obj in source_objects:
+        obj = overlay_doc.addObject("Part::Feature",group_name+"_"+source_obj.Name)
+        obj.Label = source_obj.Label+" [%g deg]"%angle
+        obj.Shape = source_obj.Shape.copy()
+        for prop in ["Extension","PinToEye","RearBore","ClevisBore","RetractedPinDistance","OutsideDiameter","InsideDiameter","Length"]:
+            if prop in source_obj.PropertiesList:
+                obj.addProperty("App::PropertyLength",prop,"Reference dimensions")
+                setattr(obj,prop,getattr(source_obj,prop))
+        if "Attachment" in source_obj.PropertiesList:
+            obj.addProperty("App::PropertyString","Attachment","Assembly")
+            obj.Attachment=source_obj.Attachment
+            obj.addProperty("App::PropertyAngle","RotationAboutPivot","Assembly")
+            obj.RotationAboutPivot=source_obj.RotationAboutPivot
+        group.addObject(obj)
+        copies.append(obj)
+        is_pivot = source_obj.Name.startswith("cone_rotation_pivot_") or source_obj.Name in ("cylinder_base_pin","RoundHopper","HopperBaseBand","SteelOuterBand")
+        # Both complete states retain the fixed bars; draw the coincident
+        # opened copy hidden to avoid two surfaces fighting for the same pixels.
+        obj.Visibility = not (is_pivot and angle!=0)
+        if App.GuiUp:
+            obj.ViewObject.ShapeColor = color
+            obj.ViewObject.LineColor = color
+            obj.ViewObject.Transparency = 70 if angle==0 else 40
+            obj.ViewObject.DisplayMode = "Flat Lines"
+            obj.ViewObject.LineWidth = 1.5
+            if source_obj.Name.startswith(("WeldedPivotTube","Bracket","HorizontalTubeBracket")):
+                obj.ViewObject.ShapeColor=(202/255.0,168/255.0,112/255.0)
+                obj.ViewObject.LineColor=(0.40,0.30,0.16)
+            if is_pivot:
+                obj.ViewObject.ShapeColor=(0.20,0.65,0.45)
+                obj.ViewObject.LineColor=(0.12,0.40,0.25)
+                obj.ViewObject.Transparency=0
+            if source_obj.Name in ("RoundHopper","HopperBaseBand"):
+                obj.ViewObject.ShapeColor=(1.0,1.0,1.0)
+                obj.ViewObject.LineColor=(0.75,0.75,0.75)
+                obj.ViewObject.Transparency=50
+            if source_obj.Name=="SteelOuterBand":
+                obj.ViewObject.ShapeColor=(0.20,0.65,0.45)
+                obj.ViewObject.LineColor=(.35,.35,.35)
+                obj.ViewObject.Transparency=0
+    pose_groups.append(group)
+    pose_objects.append(copies)
+    follower_angles.append(follower)
+    App.closeDocument(source_doc.Name)
+App.setActiveDocument(overlay_doc.Name)
+overlay_doc.recompute()
+if App.GuiUp:
+    import FreeCADGui as Gui
+    camera=Gui.activeDocument().activeView()
+    camera.setCameraType("Orthographic")
+    camera.viewRight()
+    camera.fitAll()
+try:
+    folder=os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    folder=App.getUserMacroDir(True)
+base=os.path.join(folder,"18_demi_cone_hopper_50pct_overlay_20deg")
+path=base+".FCStd"
+index=1
+while os.path.exists(path):
+    path=base+"_"+str(index)+".FCStd"
+    index+=1
+overlay_doc.saveAs(path)
+App.Console.PrintMessage("Side-view overlay: closed blue, open orange, fixed pivots green.\n")
+App.Console.PrintMessage("Input: 0 and 20 degrees; open follower: %.6f degrees.\n"%abs(follower_angles[1]))
+App.Console.PrintMessage("Saved: "+path+"\n")
