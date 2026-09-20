@@ -1,0 +1,32 @@
+Units: millimetres. Scale 1:1. All geometry on CUT layer. No kerf compensation.
+Horizontal bracket: cut 2 from 6 mm steel; 4 x diameter 10 holes at 15 mm pitch.
+Upright bracket: cut 4 from 3 mm steel; 3 x diameter 6 holes, middle pivot offset outward 20 mm.
+Rounded profiles and tube-fitting cutout are included.
+[
+  {
+    "file": "10_Horizontal_Tube_Bracket_84x24_6mm_4Holes.dxf",
+    "thickness_mm": 6,
+    "quantity": 2,
+    "width_mm": 84.0,
+    "height_mm": 24.0,
+    "closed_contours": 6,
+    "entities": {
+      "CIRCLE": 4,
+      "LINE": 5,
+      "ARC": 6
+    }
+  },
+  {
+    "file": "10_Upright_Bracket_OffsetPivot_3mm.dxf",
+    "thickness_mm": 3,
+    "quantity": 4,
+    "width_mm": 42.0,
+    "height_mm": 60.0,
+    "closed_contours": 4,
+    "entities": {
+      "CIRCLE": 3,
+      "LINE": 7,
+      "ARC": 3
+    }
+  }
+]
